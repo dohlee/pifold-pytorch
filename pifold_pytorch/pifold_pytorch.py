@@ -9,29 +9,6 @@ from torch import einsum
 from einops.layers.torch import Rearrange
 
 
-class NodeMLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x
-
-
-class EdgeMLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x
-
-
-class GateMLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x):
-        return x
-
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -43,7 +20,6 @@ class Residual(nn.Module):
 def scatter_mean(x, batch_idx):
     l, bsz = len(batch_idx), batch_idx.max().item() + 1
     d = x.size(-1)
-
     batch_idx = batch_idx.unsqueeze(0).T
 
     mask = torch.zeros(l, bsz).scatter_(
@@ -53,10 +29,8 @@ def scatter_mean(x, batch_idx):
     )
     bcount = mask.sum(dim=0)
     mask = mask.unsqueeze(-1).expand(-1, -1, d) # i, bsz, d
-
     # masking
     x = x.unsqueeze(1).expand(-1, bsz, -1) * mask
-
     # average
     x = x.sum(dim=0) / bcount.unsqueeze(1)
     return x
@@ -91,17 +65,14 @@ class PiGNNLayer(nn.Module):
 
         # (h_j || e_ji || h_i) to e_emb
         self.edge_mlp = nn.Sequential(
-            Residual(
-                nn.Sequential(
-                    nn.Linear(3 * d_emb, d_emb),
-                    nn.GELU(),
-                    nn.Linear(d_emb, d_emb),
-                    nn.GELU(),
-                    nn.Linear(d_emb, d_emb),
-                )
-            ),
-            nn.BatchNorm1d(d_emb),
+            nn.Linear(3 * d_emb, d_emb),
+            nn.GELU(),
+            nn.Linear(d_emb, d_emb),
+            nn.GELU(),
+            nn.Linear(d_emb, d_emb),
+            nn.Dropout(0.1),
         )
+        self.edge_bn = nn.BatchNorm1d(d_emb)
 
         self.gate_mlp = nn.Sequential(
             nn.Linear(d_emb, d_emb),
@@ -110,7 +81,6 @@ class PiGNNLayer(nn.Module):
             nn.ReLU(),
             nn.Linear(d_emb, d_emb),
         )
-
 
     def forward(self, h, e, edge_idx, batch_idx):
         # h: (# nodes, d_emb)
@@ -134,14 +104,13 @@ class PiGNNLayer(nn.Module):
         # Aggregate node values with attention weights
         # to update node features.
         _h = einsum('hij,ijd->hid', att, vj)
-        print(_h.shape)
         _h = rearrange(_h, 'h i d -> i (h d)')
         _h = self.to_h(_h) # Final linear projection.
 
         #
         # Edge update
         #
-        e = self.edge_mlp(hi_eij_hj) 
+        e = self.edge_bn(e + self.edge_mlp(hi_eij_hj))
 
         #
         # Global context attention
@@ -149,11 +118,11 @@ class PiGNNLayer(nn.Module):
         c = scatter_mean(_h, batch_idx)
         h = _h * torch.sigmoid(self.gate_mlp(c))
 
-        return h
+        return h, e
 
 
 class PiFold(pl.LightningModule):
-    def __init__(self, d_node, d_edge, d_emb=128):
+    def __init__(self, d_node, d_edge, d_emb=128, n_heads=4, n_neighbors=30):
         super().__init__()
 
         self.d_emb = d_emb
@@ -162,24 +131,42 @@ class PiFold(pl.LightningModule):
         self.edge_proj = nn.Linear(d_edge, d_emb)
 
         self.layers = nn.ModuleList([
-            PiGNNLayer(d_emb, n_heads=4, n_neighbors=30)
+            PiGNNLayer(d_emb, n_heads=n_heads, n_neighbors=n_neighbors)
             for _ in range(10)
         ])
+        self.to_seq = nn.Linear(d_emb, 20)
 
-    def forward(self, node, edge, edge_index):
+        self.criterion = nn.CrossEntropyLoss()
+
+    def forward(self, node, edge, edge_idx, batch_idx):
         h = self.node_proj(node)
         e = self.edge_proj(edge)
 
         for layer in self.layers:
-            h, e = layer(h, e, edge_index)
+            h, e = layer(h, e, edge_idx, batch_idx)
 
-        pass
+        logits = self.to_seq(h)
+        return logits
 
-    def training_step(self, batch, batch_idx):
-        pass
+    def training_step(self, batch):
+        node, edge = batch['node'], batch['target']
+        edge_idx, batch_idx = batch['edge_idx'], batch['batch_idx']
+        out = self.forward(node, edge, edge_idx, batch_idx)
+
+        target = batch['target']
+        loss = self.criterion(out, target) 
+
+        return loss
 
     def validation_step(self, batch, batch_idx):
-        pass
+        node, edge = batch['node'], batch['target']
+        edge_idx, batch_idx = batch['edge_idx'], batch['batch_idx']
+        out = self.forward(node, edge, edge_idx, batch_idx)
+
+        target = batch['target']
+        loss = self.criterion(out, target)
+
+        return loss
 
     def test_step(self, batch, batch_idx):
         pass
@@ -228,9 +215,11 @@ if __name__ == "__main__":
     d_emb = 128
     n_neighbors = 2
     n_heads = 1
+    d_node = 16
+    d_edge = 16
 
-    h = torch.randn(1 * n_atoms, 128)
-    e = torch.randn(1 * n_atoms * n_neighbors, 128)
+    node = torch.randn(1 * n_atoms, d_node)
+    edge = torch.randn(1 * n_atoms * n_neighbors, d_edge)
     edge_idx = torch.tensor([
         [0, 1],
         [0, 2],
@@ -240,7 +229,16 @@ if __name__ == "__main__":
         [2, 1],
     ]).long().T
 
-    batch_idx = torch.tensor([0, 0, 0, 0]).long()
+    batch_idx = torch.tensor([0, 0, 0]).long()
 
-    layer = PiGNNLayer(d_emb=d_emb, n_heads=n_heads, n_neighbors=n_neighbors)
-    layer.forward(h, e, edge_idx, batch_idx)
+    model = PiFold(d_node=d_node, d_edge=d_edge, d_emb=d_emb, n_neighbors=n_neighbors, n_heads=n_heads)
+    out = model(node, edge, edge_idx, batch_idx)
+
+    print(out.shape)
+
+    # layer = PiGNNLayer(d_emb=d_emb, n_heads=n_heads, n_neighbors=n_neighbors)
+
+    # h, e = layer.forward(h, e, edge_idx, batch_idx)
+    # print(h.shape, e.shape)
+
+    
