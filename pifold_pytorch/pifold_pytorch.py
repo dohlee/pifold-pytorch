@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.optim as optim
 import torch.nn as nn
@@ -38,6 +39,27 @@ class Residual(nn.Module):
     
     def forward(self, x):
         return x + self.fn(x)
+    
+def scatter_mean(x, batch_idx):
+    l, bsz = len(batch_idx), batch_idx.max().item() + 1
+    d = x.size(-1)
+
+    batch_idx = batch_idx.unsqueeze(0).T
+
+    mask = torch.zeros(l, bsz).scatter_(
+        dim=1,
+        index=batch_idx,
+        src=torch.ones_like(batch_idx, dtype=torch.float32)
+    )
+    bcount = mask.sum(dim=0)
+    mask = mask.unsqueeze(-1).expand(-1, -1, d) # i, bsz, d
+
+    # masking
+    x = x.unsqueeze(1).expand(-1, bsz, -1) * mask
+
+    # average
+    x = x.sum(dim=0) / bcount.unsqueeze(1)
+    return x
 
 class PiGNNLayer(nn.Module):
     def __init__(self, d_emb, n_heads, n_neighbors):
@@ -81,14 +103,20 @@ class PiGNNLayer(nn.Module):
             nn.BatchNorm1d(d_emb),
         )
 
-        self.gate_mlp = nn.Linear(d_emb, d_emb)
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(d_emb, d_emb),
+            nn.ReLU(),
+            nn.Linear(d_emb, d_emb),
+            nn.ReLU(),
+            nn.Linear(d_emb, d_emb),
+        )
 
 
-    def forward(self, h, e, edge_index):
+    def forward(self, h, e, edge_idx, batch_idx):
         # h: (# nodes, d_emb)
         # e: (# edges, d_emb)
         # edge_index: (2, # edges)
-        hi, hj = h[edge_index[0]], h[edge_index[1]]
+        hi, hj = h[edge_idx[0]], h[edge_idx[1]]
 
         hi_eij_hj = torch.cat( [hi, e, hj], dim=-1 )
         eij_hj = torch.cat( [e, hj], dim=-1 ) 
@@ -97,7 +125,7 @@ class PiGNNLayer(nn.Module):
         # Node update
         # 
         # Compute attention weights for each edge.
-        w = self.att_mlp(hi_eij_hj) / torch.sqrt(self.d_head)
+        w = self.att_mlp(hi_eij_hj) / math.sqrt(self.d_head)
         att = w.softmax(dim=-1) # h, i, j
 
         # Compute node values.
@@ -105,14 +133,21 @@ class PiGNNLayer(nn.Module):
 
         # Aggregate node values with attention weights
         # to update node features.
-        h = einsum('bhij,bijd->bhid', att, vj)
-        h = rearrange(h, 'b h i d -> (b i) (h d)')
-        h = self.to_h(h) # Final linear projection.
+        _h = einsum('hij,ijd->hid', att, vj)
+        print(_h.shape)
+        _h = rearrange(_h, 'h i d -> i (h d)')
+        _h = self.to_h(_h) # Final linear projection.
 
         #
         # Edge update
         #
         e = self.edge_mlp(hi_eij_hj) 
+
+        #
+        # Global context attention
+        #
+        c = scatter_mean(_h, batch_idx)
+        h = _h * torch.sigmoid(self.gate_mlp(c))
 
         return h
 
@@ -155,21 +190,57 @@ class PiFold(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    n_atoms = 64
+    # n_atoms = 64
+    # d_emb = 128
+    # n_neighbors = 30
+    # n_heads = 4
+
+    # att_mlp = nn.Sequential(
+    #     nn.Linear(3 * d_emb, d_emb),
+    #     nn.ReLU(),
+    #     nn.Linear(d_emb, d_emb),
+    #     nn.ReLU(),
+    #     nn.Linear(d_emb, n_heads),
+    #     Rearrange('(i j) h -> h i j', j=n_neighbors),
+    # )
+
+    # x = torch.randn(n_atoms * n_neighbors, d_emb)
+    # x = torch.cat([x, x, x], dim=-1)
+
+    # print(att_mlp(x).shape)
+
+    # x = torch.tensor([
+    #     [1, 1, 1],
+    #     [2, 2, 2],
+    #     [1, 1, 1],
+    #     [2, 2, 2],
+    #     [1, 1, 1],
+    #     [2, 2, 2],
+    #     [3, 3, 3],
+    # ]).float()
+
+    # batch_idx = torch.tensor([0, 1, 0, 1, 0, 2, 2]).long()
+
+    # s = scatter_mean(x, batch_idx)
+    # print(s)
+
+    n_atoms = 3
     d_emb = 128
-    n_neighbors = 30
-    n_heads = 4
+    n_neighbors = 2
+    n_heads = 1
 
-    att_mlp = nn.Sequential(
-        nn.Linear(3 * d_emb, d_emb),
-        nn.ReLU(),
-        nn.Linear(d_emb, d_emb),
-        nn.ReLU(),
-        nn.Linear(d_emb, n_heads),
-        Rearrange('(i j) h -> h i j', j=n_neighbors),
-    )
+    h = torch.randn(1 * n_atoms, 128)
+    e = torch.randn(1 * n_atoms * n_neighbors, 128)
+    edge_idx = torch.tensor([
+        [0, 1],
+        [0, 2],
+        [1, 0],
+        [1, 2],
+        [2, 0],
+        [2, 1],
+    ]).long().T
 
-    x = torch.randn(n_atoms * n_neighbors, d_emb)
-    x = torch.cat([x, x, x], dim=-1)
+    batch_idx = torch.tensor([0, 0, 0, 0]).long()
 
-    print(att_mlp(x).shape)
+    layer = PiGNNLayer(d_emb=d_emb, n_heads=n_heads, n_neighbors=n_neighbors)
+    layer.forward(h, e, edge_idx, batch_idx)
