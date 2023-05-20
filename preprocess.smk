@@ -14,4 +14,4 @@ rule preprocess:
     output:
         outdir / '{pdbid}.pt'
     shell:
-        'python -i {input} -o {output}'
+        'python scripts/preprocess.py -i {input} -o {output}'
