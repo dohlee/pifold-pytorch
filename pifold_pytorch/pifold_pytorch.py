@@ -122,11 +122,13 @@ class PiGNNLayer(nn.Module):
 
 
 class PiFold(pl.LightningModule):
-    def __init__(self, d_node, d_edge, d_emb=128, n_heads=4, n_neighbors=30):
+    def __init__(self, d_node, d_edge, d_emb=128, d_rbf=16, n_heads=4, n_virtual_atoms=3, n_neighbors=30):
         super().__init__()
 
-        self.d_emb = d_emb
+        self.virtual_atoms = nn.Parameter(torch.randn(n_virtual_atoms, 3))
+        self.d_rbf = d_rbf
 
+        self.d_emb = d_emb
         self.node_proj = nn.Linear(d_node, d_emb)
         self.edge_proj = nn.Linear(d_edge, d_emb)
 
@@ -149,9 +151,21 @@ class PiFold(pl.LightningModule):
         return logits
 
     def training_step(self, batch):
-        node, edge = batch['node'], batch['target']
+        four_atom_coords, q = batch['four_atom_coords'], batch['q']
         edge_idx, batch_idx = batch['edge_idx'], batch['batch_idx']
-        out = self.forward(node, edge, edge_idx, batch_idx)
+        target = batch['aa_idx']
+
+        # Distance features depends on virtual atoms, so we need to compute them here
+        node_dist_feat, edge_dist_feat = self.compute_dist_feat(four_atom_coords, q, edge_idx)
+        # On the other hand, angle and direction features can be precomputed
+        node_angle_feat, edge_angle_feat = batch['node_angle_feat'], batch['edge_angle_feat']
+        node_dir_feat, edge_dir_feat = batch['node_dir_feat'], batch['edge_dir_feat']
+
+        # Aggregate features
+        node_feat = torch.cat([ node_dist_feat, node_angle_feat, node_dir_feat ], dim=-1)
+        edge_feat = torch.cat([ edge_dist_feat, edge_angle_feat, edge_dir_feat ], dim=-1)
+
+        out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
 
         target = batch['target']
         loss = self.criterion(out, target) 
@@ -174,6 +188,73 @@ class PiFold(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
+
+    def compute_dist_feat(self, four_atom_coords, q, edge_idx):
+        """Given the four-atom coordinates (N, Ca, C, O) `four_atom_coords`,
+        rotation matrices for corresponding residues `q`,
+        and edge index towards top-k neighboring residues `edge_idx`
+        return the node features and edge features.
+        """
+        CA_IDX = 0
+        virtual_atoms_norm = self.virtual_atoms / torch.norm(self.virtual_atoms, dim=1, keepdim=True)
+        virtual_atom_coords = (q @ virtual_atoms_norm.T).T # Rotate
+        virtual_atom_coords = virtual_atom_coords[None, :, :] + four_atom_coords[:, None, CA_IDX] # Shift by Ca
+
+        node_dist_feat = self.compute_node_dist_feat(self, four_atom_coords, q, virtual_atom_coords)
+        edge_dist_feat = self.compute_edge_dist_feat(self, four_atom_coords, edge_idx, virtual_atom_coords)
+
+        return node_dist_feat, edge_dist_feat
+
+    def compute_node_dist_feat(self, four_atom_coords, virtual_atom_coords):
+        # Compute distance between each pair of 'true' atoms.
+        dist = torch.sqrt( ( (four_atom_coords[:, None, :, :] - four_atom_coords[:, :, None, :])**2 ).sum(axis=-1) )
+        triu_indices = [1, 2, 3, 6, 7, 11]
+        node_dist_feat = rbf(dist).view(-1, 4 ** 2, self.d_rbf)
+        node_dist_feat = node_dist_feat[:, triu_indices, :].view(-1, len(triu_indices) * self.d_rbf)
+
+        # Compute distance between each pair of 'virtual' atoms.
+        dist = torch.sqrt( ( (virtual_atom_coords[:, None, :, :] - virtual_atom_coords[:, :, None, :])**2 ).sum(axis=-1) )
+
+        triu_indices = []
+        idx = 0
+        for i in range(self.n_virtual_atoms):
+            for j in range(self.n_virtual_atoms):
+                if i < j:
+                    triu_indices.append(idx)
+                idx += 1
+
+        virtual_node_dist_feat = rbf(dist).view(-1, self.n_virtual_atoms ** 2, self.d_rbf)
+        virtual_node_dist_feat = virtual_node_dist_feat[:, triu_indices, :].view(-1, len(triu_indices) * self.d_rbf)
+
+        return torch.cat([node_dist_feat, virtual_node_dist_feat], dim=-1) # (n_nodes, 6 + 3)
+
+    def compute_edge_dist_feat(self, four_atom_coords, edge_idx, virtual_atom_coords):
+        src_idx, dst_idx = edge_idx[0], edge_idx[1]
+
+        # Compute distance between each pair of 'true' atoms in neighboring residues.
+        four_atom_coords_i, four_atom_coords_j = four_atom_coords[src_idx], four_atom_coords[dst_idx]
+
+        edge_dist_feat = torch.sqrt( ( (four_atom_coords_i[:, None, :, :] - four_atom_coords_j[:, :, None, :])**2 ).sum(axis=-1) )
+        edge_dist_feat = rbf(edge_dist_feat)
+        edge_dist_feat = edge_dist_feat.view(len(edge_dist_feat), -1)
+
+        # Compute distance between each pair of 'virtual' atoms in neighboring residues.
+        virtual_atom_coords_i, virtual_atom_coords_j = virtual_atom_coords[src_idx], virtual_atom_coords[dst_idx]
+
+        virtual_edge_dist_feat = torch.sqrt( ( (virtual_atom_coords_i[:, None, :, :] - virtual_atom_coords_j[:, :, None, :])**2 ).sum(axis=-1) )
+        virtual_edge_dist_feat = rbf(virtual_edge_dist_feat)
+        virtual_edge_dist_feat = edge_dist_feat.view(len(virtual_edge_dist_feat), -1)
+
+        return torch.cat([edge_dist_feat, virtual_edge_dist_feat], axis=-1)
+
+def rbf(dist, d_min=0, d_max=20, d_count=16):
+    d_mu = torch.linspace(d_min, d_max, d_count).reshape(1, 1, 1, -1)
+    d_sigma = (d_max - d_min) / d_count
+    dist = dist[:, :, :, None]
+
+    return torch.exp(-(dist - d_mu)**2 / (2 * d_sigma**2))
+
+
 
 
 if __name__ == "__main__":
