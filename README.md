@@ -15,8 +15,24 @@ $ pip install pifold-pytorch
 ## Usage
 
 ```python
-WIP
+from pifold_pytorch import PiFold
+
+model = PiFold(
+  d_node=165, d_edge=525, d_emb=128, d_rbf=16,
+  n_heads=4, num_layers=10, n_virtual_atoms=3, n_neighbors=30
+)
+
+node = torch.randn(100, 165) # Node features
+edge = torch.randn(3000, 525) # Edge features
+edge_index = torch.randint(0, 100, (2, 3000)) # Edge indices
+batch_idx = torch.zeros(100, dtype=torch.long) # Batch indices
+
+output = model(node, edge, edge_index, batch_idx)
+output.shape # (100, 20), Probabilities for amino acids at each position.
 ```
+
+## Reproduction status
+Reproduction of PiFold training is now ongoing. Training logs can be found [here](https://wandb.ai/dohlee/pifold-pytorch/reports/PiFold-reproduction--Vmlldzo0NDI1OTkw).
 
 ## Citation
 ```bibtex
