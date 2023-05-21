@@ -5,8 +5,10 @@ import pandas as pd
 import os
 
 from torch.utils.data import DataLoader
+from pytorch_lightning.callbacks import LearningRateMonitor
 
 from pifold_pytorch import PiFold, PiFoldDataset
+
 
 
 def parse_argument():
@@ -141,6 +143,9 @@ def main():
         devices=1,
         max_epochs=args.epochs,
         gradient_clip_val=1.0,
+        callbacks=[
+            LearningRateMonitor(logging_interval="step")
+        ],
         logger=logger,
     )
 

@@ -200,8 +200,9 @@ class PiFold(pl.LightningModule):
         out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
 
         loss = self.criterion(out, target)
+        acc = (out.argmax(dim=-1) == target).float().mean()
         self.log_dict(
-            {"train/loss": loss},
+            {"train/loss": loss, "train/perplexity": torch.exp(loss), "train/recovery": acc},
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -233,8 +234,9 @@ class PiFold(pl.LightningModule):
         out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
 
         loss = self.criterion(out, target)
+        acc = (out.argmax(dim=-1) == target).float().mean()
         self.log_dict(
-            {"val/loss": loss},
+            {"val/loss": loss, "val/perplexity": torch.exp(loss), "val/recovery": acc},
             prog_bar=True,
             on_step=False,
             on_epoch=True,
@@ -248,7 +250,16 @@ class PiFold(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
-        return optimizer
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=self.lr, total_steps=self.trainer.estimated_stepping_batches
+        )
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }
 
     def compute_dist_feat(self, four_atom_coords, q, edge_idx):
         """Given the four-atom coordinates (N, Ca, C, O) `four_atom_coords`,
