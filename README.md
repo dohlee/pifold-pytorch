@@ -32,7 +32,8 @@ output.shape # (100, 20), Probabilities for amino acids at each position.
 ```
 
 ## Reproduction status
-Reproduction of PiFold training is now ongoing. Training logs can be found [here](https://wandb.ai/dohlee/pifold-pytorch/reports/PiFold-reproduction--Vmlldzo0NDI1OTkw).
+
+Reproduction of PiFold training is now ongoing. Training logs can be found [here](https://api.wandb.ai/links/dohlee/lzfyj2u1).
 
 ## Citation
 ```bibtex
