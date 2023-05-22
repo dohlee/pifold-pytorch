@@ -155,8 +155,22 @@ class PiFold(pl.LightningModule):
         self.d_rbf = d_rbf
 
         self.d_emb = d_emb
-        self.node_proj = nn.Linear(d_node, d_emb)
-        self.edge_proj = nn.Linear(d_edge, d_emb)
+        self.node_proj = nn.Sequential(
+            nn.Linear(d_node, d_emb),
+            nn.BatchNorm1d(d_emb),
+            nn.Linear(d_emb, d_emb),
+            nn.LeakyReLU(),
+            nn.BatchNorm1d(d_emb),
+            nn.Linear(d_emb, d_emb),
+            nn.LeakyReLU(),
+            nn.BatchNorm1d(d_emb),
+            nn.Linear(d_emb, d_emb),
+        )
+        self.edge_proj = nn.Sequential(
+            nn.Linear(d_edge, d_emb),
+            nn.BatchNorm1d(d_emb),
+            nn.Linear(d_emb, d_emb),
+        )
 
         self.layers = nn.ModuleList(
             [
@@ -202,7 +216,11 @@ class PiFold(pl.LightningModule):
         loss = self.criterion(out, target)
         acc = (out.argmax(dim=-1) == target).float().mean()
         self.log_dict(
-            {"train/loss": loss, "train/perplexity": torch.exp(loss), "train/recovery": acc},
+            {
+                "train/loss": loss,
+                "train/perplexity": torch.exp(loss),
+                "train/recovery": acc,
+            },
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -250,16 +268,21 @@ class PiFold(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
-        scheduler = optim.lr_scheduler.OneCycleLR(
-            optimizer, max_lr=self.lr, total_steps=self.trainer.estimated_stepping_batches
-        )
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
-        }
+
+        # scheduler = optim.lr_scheduler.OneCycleLR(
+            # optimizer,
+            # max_lr=self.lr,
+            # total_steps=self.trainer.estimated_stepping_batches,
+        # )
+
+        return optimizer
+        # return {
+            # "optimizer": optimizer,
+            # "lr_scheduler": {
+                # "scheduler": scheduler,
+                # "interval": "step",
+            # },
+        # }
 
     def compute_dist_feat(self, four_atom_coords, q, edge_idx):
         """Given the four-atom coordinates (N, Ca, C, O) `four_atom_coords`,
