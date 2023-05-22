@@ -315,7 +315,7 @@ class PiFold(pl.LightningModule):
 
     def compute_node_dist_feat(self, fac, vac):
         # Compute distance between each pair of 'true' atoms.
-        dist = torch.sqrt(((fac[:, None, :, :] - fac[:, :, None, :]) ** 2).sum(axis=-1))
+        dist = torch.cdist(fac, fac)
         triu_indices = [1, 2, 3, 6, 7, 11]
         node_dist_feat = rbf(dist).view(-1, 4**2, self.d_rbf)
         node_dist_feat = node_dist_feat[:, triu_indices, :].view(
@@ -356,12 +356,7 @@ class PiFold(pl.LightningModule):
             four_atom_coords[dst_idx],
         )
 
-        edge_dist_feat = torch.sqrt(
-            (
-                (four_atom_coords_i[:, None, :, :] - four_atom_coords_j[:, :, None, :])
-                ** 2
-            ).sum(axis=-1)
-        )
+        edge_dist_feat = torch.cdist(four_atom_coords_i, four_atom_coords_j)
         edge_dist_feat = rbf(edge_dist_feat)
         edge_dist_feat = edge_dist_feat.view(len(edge_dist_feat), -1)
 
@@ -371,17 +366,9 @@ class PiFold(pl.LightningModule):
             virtual_atom_coords[dst_idx],
         )
 
-        virtual_edge_dist_feat = torch.sqrt(
-            (
-                (
-                    virtual_atom_coords_i[:, None, :, :]
-                    - virtual_atom_coords_j[:, :, None, :]
-                )
-                ** 2
-            ).sum(axis=-1)
-        )
+        virtual_edge_dist_feat = torch.cdist(virtual_atom_coords_i, virtual_atom_coords_j)
         virtual_edge_dist_feat = rbf(virtual_edge_dist_feat)
-        virtual_edge_dist_feat = edge_dist_feat.view(len(virtual_edge_dist_feat), -1)
+        virtual_edge_dist_feat = virtual_edge_dist_feat.view(len(virtual_edge_dist_feat), -1)
 
         return torch.cat([edge_dist_feat, virtual_edge_dist_feat], axis=-1)
 
