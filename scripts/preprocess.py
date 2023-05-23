@@ -56,7 +56,7 @@ def knn_edge_index(structure, k=30):
     ca_coords = np.array([a.coord for a in structure if a.atom_name == "CA"])
     pdist = cdist(ca_coords, ca_coords, metric="euclidean")
 
-    topk_indices = pdist.argsort(axis=1)[:, 1 : k + 1]
+    topk_indices = pdist.argsort(axis=1)[:, :k]
     edge_idx = np.array(
         [[u, v] for u, neighbors in enumerate(topk_indices) for v in neighbors]
     ).T
