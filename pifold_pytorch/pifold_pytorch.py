@@ -40,12 +40,13 @@ def scatter_mean(x, batch_idx):
 
 
 class PiGNNLayer(nn.Module):
-    def __init__(self, d_emb, n_heads, n_neighbors):
+    def __init__(self, d_emb, n_heads, n_neighbors, dropout=0.1):
         super().__init__()
 
         self.n_heads = n_heads
         self.d_head = d_emb // n_heads
         self.n_neighbors = n_neighbors
+        self.dropout = nn.Dropout(dropout)
 
         # (h_j || e_ji || h_i) to scalar
         self.att_mlp = nn.Sequential(
@@ -54,7 +55,7 @@ class PiGNNLayer(nn.Module):
             nn.Linear(d_emb, d_emb),
             nn.ReLU(),
             nn.Linear(d_emb, n_heads),
-            Rearrange("(i j) h -> h i j", j=n_neighbors),
+            Rearrange("(i j) h -> i j h", j=n_neighbors),
         )
         # (e_ji || h_j) to d_emb
         self.node_mlp = nn.Sequential(
@@ -62,12 +63,22 @@ class PiGNNLayer(nn.Module):
             nn.GELU(),
             nn.Linear(d_emb, d_emb),
             nn.GELU(),
-            nn.Linear(d_emb, self.d_head),
+            nn.Linear(d_emb, d_emb),
             Rearrange("(i j) d -> i j d", j=n_neighbors),
+            Rearrange("i j (h d) -> i j h d", d=self.d_head),
         )
         self.to_h = nn.Linear(d_emb, d_emb, bias=False)
+        
+        # Feedforward
+        self.ff_bn1 = nn.BatchNorm1d(d_emb)
+        self.ff = nn.Sequential(
+            nn.Linear(d_emb, d_emb * 4),
+            nn.ReLU(),
+            nn.Linear(d_emb * 4, d_emb)
+        )
+        self.ff_bn2 = nn.BatchNorm1d(d_emb)
 
-        # (h_j || e_ji || h_i) to e_emb
+        # (h_j || e_ji || h_i) to d_emb
         self.edge_mlp = nn.Sequential(
             nn.Linear(3 * d_emb, d_emb),
             nn.GELU(),
@@ -102,29 +113,35 @@ class PiGNNLayer(nn.Module):
         #
         # Compute attention weights for each edge.
         w = self.att_mlp(hi_eij_hj) / math.sqrt(self.d_head)
-        att = w.softmax(dim=-1)  # h, i, j
+        att = w.softmax(dim=1)  # i j h
 
         # Compute node values.
-        vj = self.node_mlp(eij_hj)  # i, j, d_emb
+        vj = self.node_mlp(eij_hj)  # i, j, n_heads, d_head
 
         # Aggregate node values with attention weights
         # to update node features.
-        _h = einsum("hij,ijd->hid", att, vj)
-        _h = rearrange(_h, "h i d -> i (h d)")
+        _h = einsum("ijh,ijhd->ihd", att, vj)
+        _h = rearrange(_h, "i h d -> i (h d)")
         _h = self.to_h(_h)  # Final linear projection.
+        
+        # FeedForward
+        h = self.ff_bn1(h + self.dropout(_h))
+        h = self.ff_bn2(h + self.dropout(self.ff(h)))
 
         #
         # Edge update
         #
+        hi, hj = h[edge_idx[0]], h[edge_idx[1]]
+        hi_eij_hj = torch.cat([hi, e, hj], dim=-1)
         e = self.edge_bn(e + self.edge_mlp(hi_eij_hj))
 
         #
         # Global context attention
         #
-        c = scatter_mean(_h, batch_idx)
+        c = scatter_mean(h, batch_idx)
 
         gates = torch.sigmoid(self.gate_mlp(c))
-        h = _h * gates[batch_idx]
+        h = h * gates[batch_idx]
 
         return h, e
 
@@ -145,7 +162,7 @@ class PiFold(pl.LightningModule):
     ):
         super().__init__()
 
-        # Trainging parameters
+        # Training parameters
         self.lr = lr
         self.num_layers = num_layers
         self.n_virtual_atoms = n_virtual_atoms
@@ -171,6 +188,8 @@ class PiFold(pl.LightningModule):
             nn.BatchNorm1d(d_emb),
             nn.Linear(d_emb, d_emb),
         )
+#         self.node_proj = nn.Linear(d_node, d_emb)
+#         self.edge_proj = nn.Linear(d_edge, d_emb)
 
         self.layers = nn.ModuleList(
             [
@@ -179,8 +198,18 @@ class PiFold(pl.LightningModule):
             ]
         )
         self.to_seq = nn.Linear(d_emb, 20)
+        
+        self._init_params()
 
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        
+    def _init_params(self):
+        for name, param in self.named_parameters():
+            if name == 'virtual_atoms':
+                continue
+                
+            if param.dim() > 1:
+                nn.init.xavier_uniform_(param)
 
     def forward(self, node, edge, edge_idx, batch_idx):
         h = self.node_proj(node)
@@ -304,19 +333,19 @@ class PiFold(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
-        scheduler = optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=self.lr,
-            total_steps=self.trainer.estimated_stepping_batches,
-        )
+        # scheduler = optim.lr_scheduler.OneCycleLR(
+            # optimizer,
+            # max_lr=self.lr,
+            # total_steps=self.trainer.estimated_stepping_batches,
+        # )
 
         # return optimizer
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
+            # "lr_scheduler": {
+                # "scheduler": scheduler,
+                # "interval": "step",
+            # },
         }
 
     def compute_dist_feat(self, four_atom_coords, q, edge_idx):
@@ -325,7 +354,7 @@ class PiFold(pl.LightningModule):
         and edge index towards top-k neighboring residues `edge_idx`
         return the node features and edge features.
         """
-        CA_IDX = 0
+        CA_IDX = 1
         # assert not torch.isnan(self.virtual_atoms).any()
         virtual_atoms_norm = self.virtual_atoms / torch.norm(
             self.virtual_atoms, dim=1, keepdim=True

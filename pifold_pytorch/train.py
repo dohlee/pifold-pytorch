@@ -98,7 +98,7 @@ def collate(data):
 
 
 def main():
-    torch.set_float32_matmul_precision("medium")
+    torch.set_float32_matmul_precision("high")
 
     args = parse_argument()
     pl.seed_everything(args.seed)
@@ -135,7 +135,7 @@ def main():
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=args.bsz * 3,
+        batch_size=args.bsz,
         collate_fn=collate,
         shuffle=False,
         drop_last=False,
@@ -144,7 +144,7 @@ def main():
     )
     test_loader = DataLoader(
         test_set,
-        batch_size=args.bsz * 3,
+        batch_size=args.bsz,
         collate_fn=collate,
         shuffle=False,
         drop_last=False,
