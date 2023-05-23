@@ -10,12 +10,15 @@ from pytorch_lightning.callbacks import LearningRateMonitor
 from pifold_pytorch import PiFold, PiFoldDataset
 
 
-
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-i", "--input", required=True, help="Metadata file for training data"
+        "--train", required=True, help="Metadata file for training data"
     )
+    parser.add_argument(
+        "--val", required=True, help="Metadata file for validation data"
+    )
+    parser.add_argument("--test", required=True, help="Metadata file for test data")
     parser.add_argument(
         "-d", "--data-dir", required=True, help="Directory containing preprocessed data"
     )
@@ -29,6 +32,7 @@ def parse_argument():
     parser.add_argument(
         "-n", "--num-layers", type=int, default=10, help="Number of PiGNN layers"
     )
+    parser.add_argument("-s", "--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
         "--no-wandb",
         action="store_true",
@@ -94,9 +98,11 @@ def collate(data):
 
 
 def main():
-    torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("medium")
 
     args = parse_argument()
+    pl.seed_everything(args.seed)
+
     if args.no_wandb:
         logger = None
     else:
@@ -110,14 +116,13 @@ def main():
         lr=args.learning_rate,
     )
 
-    meta = (
-        pd.read_csv(args.input).sample(frac=1.0, random_state=42).reset_index(drop=True)
-    )
-    train_meta = meta.iloc[: int(len(meta) * 0.8)]
-    val_meta = meta.iloc[int(len(meta) * 0.8) :]
+    train_meta = pd.read_csv(args.train)
+    val_meta = pd.read_csv(args.val)
+    test_meta = pd.read_csv(args.test)
 
     train_set = PiFoldDataset(meta=train_meta, data_dir=args.data_dir)
     val_set = PiFoldDataset(meta=val_meta, data_dir=args.data_dir)
+    test_set = PiFoldDataset(meta=test_meta, data_dir=args.data_dir)
 
     train_loader = DataLoader(
         train_set,
@@ -130,7 +135,16 @@ def main():
     )
     val_loader = DataLoader(
         val_set,
-        batch_size=args.bsz,
+        batch_size=args.bsz * 3,
+        collate_fn=collate,
+        shuffle=False,
+        drop_last=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=args.bsz * 3,
         collate_fn=collate,
         shuffle=False,
         drop_last=False,
@@ -143,16 +157,15 @@ def main():
         devices=1,
         max_epochs=args.epochs,
         gradient_clip_val=1.0,
-        callbacks=[
-            LearningRateMonitor(logging_interval="step")
-        ],
+        callbacks=[LearningRateMonitor(logging_interval="step")],
         logger=logger,
     )
 
+    # NOTE: ignore val_dataloader for now in reproduction
     trainer.fit(
         model,
         train_loader,
-        val_loader,
+        test_loader,
     )
 
 

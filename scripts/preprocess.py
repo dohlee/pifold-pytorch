@@ -31,6 +31,7 @@ amino_acids = [
     "VAL",
     "TRP",
     "TYR",
+    "SEC",
 ]
 aa2idx = {aa: i for i, aa in enumerate(amino_acids)}
 
