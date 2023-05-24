@@ -48,7 +48,7 @@ class PiGNNLayer(nn.Module):
         self.n_neighbors = n_neighbors
         self.dropout = nn.Dropout(dropout)
 
-        # (h_j || e_ji || h_i) to scalar
+        # (h_j || e_ji || h_i) to scalar for each head
         self.att_mlp = nn.Sequential(
             nn.Linear(3 * d_emb, d_emb),
             nn.ReLU(),
@@ -200,8 +200,10 @@ class PiFold(pl.LightningModule):
         self.to_seq = nn.Linear(d_emb, 20)
         
         self._init_params()
-
         self.criterion = nn.CrossEntropyLoss(reduction='mean')
+        
+        # Empty list for validation recovery metrics.
+        self.validation_step_outputs = []
         
     def _init_params(self):
         for name, param in self.named_parameters():
@@ -243,12 +245,14 @@ class PiFold(pl.LightningModule):
         out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
 
         loss = self.criterion(out, target)
-        acc = (out.argmax(dim=-1) == target).float().mean()
+        res_rec = (out.argmax(dim=-1) == target).float()
+        prt_rec = scatter_mean( res_rec.view(-1, 1), batch_idx )
         self.log_dict(
             {
                 "train/loss": loss,
                 "train/perplexity": torch.exp(loss),
-                "train/recovery": acc,
+                "train/reswise_recovery": res_rec.mean(),
+                "train/prtwise_recovery": prt_rec.mean(),
             },
             prog_bar=True,
             on_step=True,
@@ -281,71 +285,50 @@ class PiFold(pl.LightningModule):
         out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
 
         loss = self.criterion(out, target)
-        acc = (out.argmax(dim=-1) == target).float().mean()
-        self.log_dict(
-            {"val/loss": loss, "val/perplexity": torch.exp(loss), "val/recovery": acc},
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-            batch_size=self.bsz,
-        )
-
-        return loss
-
-    def test_step(self, batch, batch_idx):
-        four_atom_coords, q = batch["four_atom_coords"], batch["q"]
-        edge_idx, batch_idx = batch["edge_idx"], batch["batch_idx"]
-        target = batch["aa_idx"]
-
-        # Distance features depends on virtual atoms, so we need to compute them here
-        node_dist_feat, edge_dist_feat = self.compute_dist_feat(
-            four_atom_coords, q, edge_idx
-        )
-        # On the other hand, angle and direction features can be precomputed
-        node_angle_feat, edge_angle_feat = (
-            batch["node_angle_feat"],
-            batch["edge_angle_feat"],
-        )
-        node_dir_feat, edge_dir_feat = batch["node_dir_feat"], batch["edge_dir_feat"]
-
-        # Aggregate features
-        node_feat = torch.cat([node_dist_feat, node_angle_feat, node_dir_feat], dim=-1)
-        edge_feat = torch.cat([edge_dist_feat, edge_angle_feat, edge_dir_feat], dim=-1)
-
-        out = self.forward(node_feat, edge_feat, edge_idx, batch_idx)
-
-        loss = self.criterion(out, target)
-        acc = (out.argmax(dim=-1) == target).float().mean()
+        res_rec = (out.argmax(dim=-1) == target).float()
+        prt_rec = scatter_mean( res_rec.view(-1, 1), batch_idx )
         self.log_dict(
             {
-                "test/loss": loss,
-                "test/perplexity": torch.exp(loss),
-                "test/recovery": acc,
+                "val/loss": loss,
+                "val/perplexity": torch.exp(loss),
+                "val/reswise_recovery": res_rec.mean(),
+                "val/prtwise_recovery": prt_rec.mean(),
             },
             prog_bar=True,
             on_step=False,
             on_epoch=True,
             batch_size=self.bsz,
         )
+        
+        self.validation_step_outputs.append(prt_rec)
 
         return loss
+    
+    def on_validation_epoch_end(self):
+        prt_rec = torch.cat(self.validation_step_outputs)
+        
+        self.log_dict({
+            'val/median_prtwise_recovery': torch.median(prt_rec)
+        })
+        
+        self.validation_step_outputs.clear()
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
 
-        # scheduler = optim.lr_scheduler.OneCycleLR(
-            # optimizer,
-            # max_lr=self.lr,
-            # total_steps=self.trainer.estimated_stepping_batches,
-        # )
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=self.lr,
+            total_steps=self.trainer.estimated_stepping_batches,
+        )
 
         # return optimizer
         return {
             "optimizer": optimizer,
-            # "lr_scheduler": {
-                # "scheduler": scheduler,
-                # "interval": "step",
-            # },
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
         }
 
     def compute_dist_feat(self, four_atom_coords, q, edge_idx):

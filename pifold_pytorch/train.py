@@ -49,7 +49,8 @@ def collate(data):
     edge_idx, aa_idx, batch_idx = [], [], []
     node_angle_feat, edge_angle_feat = [], []
     node_dir_feat, edge_dir_feat = [], []
-
+    
+    batch_start_idx = 0
     for i, d in enumerate(data):
         assert len(d["aa_idx"]) == len(d["node_angle_feat"])
         assert len(d["aa_idx"]) == len(d["node_dir_feat"])
@@ -58,7 +59,7 @@ def collate(data):
 
         four_atom_coords.append(d["four_atom_coords"])
         q.append(d["q"])
-        edge_idx.append(d["edge_idx"])
+        edge_idx.append(d["edge_idx"] + batch_start_idx)
         aa_idx.append(d["aa_idx"])
 
         batch_idx.append(torch.ones(num_residues).long() * i)
@@ -67,6 +68,8 @@ def collate(data):
         edge_angle_feat.append(d["edge_angle_feat"])
         node_dir_feat.append(d["node_dir_feat"])
         edge_dir_feat.append(d["edge_dir_feat"])
+        
+        batch_start_idx += num_residues
 
     batch["four_atom_coords"] = torch.cat(four_atom_coords)
     batch["q"] = torch.cat(q)
