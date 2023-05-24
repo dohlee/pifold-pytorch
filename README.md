@@ -33,7 +33,12 @@ output.shape # (100, 20), Probabilities for amino acids at each position.
 
 ## Reproduction status
 
-Reproduction of PiFold training is now ongoing. Training logs can be found [here](https://api.wandb.ai/links/dohlee/lzfyj2u1).
+Logs for train/validation of PiFold with CATH 4.2 dataset can be found [here](https://api.wandb.ai/links/dohlee/lzfyj2u1).
+
+| Model | Perplexity (test) | Per-protein median recovery (test) |
+|:-----:|:---------------:|:-------------------:|
+Paper | 4.55 | 51.66 |
+Reproduction (OneCycleLR) | 4.664207 | 51.5385 |
 
 ## Citation
 ```bibtex
