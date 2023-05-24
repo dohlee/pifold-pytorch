@@ -6,6 +6,7 @@ import os
 
 from torch.utils.data import DataLoader
 from pytorch_lightning.callbacks import LearningRateMonitor
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from pifold_pytorch import PiFold, PiFoldDataset
 
@@ -160,7 +161,10 @@ def main():
         devices=1,
         max_epochs=args.epochs,
         gradient_clip_val=1.0,
-        callbacks=[LearningRateMonitor(logging_interval="step")],
+        callbacks=[
+            LearningRateMonitor(logging_interval="step"),
+            EarlyStopping(monitor='val/loss', patience=7),
+        ],
         logger=logger,
     )
 
