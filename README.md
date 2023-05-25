@@ -33,12 +33,13 @@ output.shape # (100, 20), Probabilities for amino acids at each position.
 
 ## Reproduction status
 
-Logs for train/validation of PiFold with CATH 4.2 dataset can be found [here](https://api.wandb.ai/links/dohlee/lzfyj2u1).
+Logs for train/validation of PiFold with CATH 4.2 dataset can be found [here](https://api.wandb.ai/links/dohlee/lzfyj2u1). Early stopping with patience of 7 epochs was used.
 
 | Model | Perplexity (test) | Per-protein median recovery (test) |
 |:-----:|:---------------:|:-------------------:|
-Paper | 4.55 | 51.66 |
-Reproduction (OneCycleLR) | 4.664207 | 51.5385 |
+Paper (10 layers) | 4.55 | 51.66 |
+Reproduction (10 layers, OneCycleLR) | 4.645 | 51.28 |
+Reproduction (16 layers, OneCycleLR) | 4.702 | 52.27 |
 
 ## Citation
 ```bibtex
