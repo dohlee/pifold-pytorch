@@ -38,8 +38,12 @@ Logs for train/validation of PiFold with CATH 4.2 dataset can be found [here](ht
 | Model | Perplexity (test) | Per-protein median recovery (test) |
 |:-----:|:---------------:|:-------------------:|
 Paper (10 layers) | 4.55 | 51.66 |
-Reproduction (10 layers, OneCycleLR) | 4.645 | 51.28 |
-Reproduction (16 layers, OneCycleLR) | 4.702 | 52.27 |
+Reproduction (24 layers, N(0, 1/25) noise at dist) | 4.611 | 52.52 |
+Reproduction (16 layers) | 4.702 | 52.27 |
+Reproduction (10 layers) | 4.645 | 51.28 |
+Reproduction (10 layers, N(0, 1/25) noise at dist) | 4.656 | 51.59 |
+Reproduction (16 layers, N(0, 1/25) noise at dist) | 4.666 | 51.68 |
+
 
 ## Citation
 ```bibtex

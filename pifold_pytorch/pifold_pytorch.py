@@ -369,6 +369,9 @@ class PiFold(pl.LightningModule):
 
         # Compute distance between each pair of 'virtual' atoms.
         dist = torch.cdist(vac, vac)
+        
+        # Add small Noise
+        dist = (dist + torch.randn_like(dist) / 25).clip(min=0.0)
 
         triu_indices = []
         idx = 0
@@ -400,6 +403,10 @@ class PiFold(pl.LightningModule):
         )
 
         edge_dist_feat = torch.cdist(four_atom_coords_i, four_atom_coords_j)
+        
+        # Add small Noise
+        edge_dist_feat = (edge_dist_feat + torch.randn_like(edge_dist_feat) / 25).clip(min=0.0)
+        
         edge_dist_feat = rbf(edge_dist_feat)
         edge_dist_feat = edge_dist_feat.view(len(edge_dist_feat), -1)
 
