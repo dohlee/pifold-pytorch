@@ -68,13 +68,11 @@ class PiGNNLayer(nn.Module):
             Rearrange("i j (h d) -> i j h d", d=self.d_head),
         )
         self.to_h = nn.Linear(d_emb, d_emb, bias=False)
-        
+
         # Feedforward
         self.ff_bn1 = nn.BatchNorm1d(d_emb)
         self.ff = nn.Sequential(
-            nn.Linear(d_emb, d_emb * 4),
-            nn.ReLU(),
-            nn.Linear(d_emb * 4, d_emb)
+            nn.Linear(d_emb, d_emb * 4), nn.ReLU(), nn.Linear(d_emb * 4, d_emb)
         )
         self.ff_bn2 = nn.BatchNorm1d(d_emb)
 
@@ -123,7 +121,7 @@ class PiGNNLayer(nn.Module):
         _h = einsum("ijh,ijhd->ihd", att, vj)
         _h = rearrange(_h, "i h d -> i (h d)")
         _h = self.to_h(_h)  # Final linear projection.
-        
+
         # FeedForward
         h = self.ff_bn1(h + self.dropout(_h))
         h = self.ff_bn2(h + self.dropout(self.ff(h)))
@@ -157,6 +155,7 @@ class PiFold(pl.LightningModule):
         num_layers=10,
         n_virtual_atoms=3,
         n_neighbors=30,
+        noise_std=0.02,
         lr=1e-3,
         bsz=8,
     ):
@@ -167,6 +166,7 @@ class PiFold(pl.LightningModule):
         self.num_layers = num_layers
         self.n_virtual_atoms = n_virtual_atoms
         self.bsz = bsz
+        self.noise_std = noise_std
 
         self.virtual_atoms = nn.Parameter(torch.randn(n_virtual_atoms, 3))
         self.d_rbf = d_rbf
@@ -188,8 +188,8 @@ class PiFold(pl.LightningModule):
             nn.BatchNorm1d(d_emb),
             nn.Linear(d_emb, d_emb),
         )
-#         self.node_proj = nn.Linear(d_node, d_emb)
-#         self.edge_proj = nn.Linear(d_edge, d_emb)
+        #         self.node_proj = nn.Linear(d_node, d_emb)
+        #         self.edge_proj = nn.Linear(d_edge, d_emb)
 
         self.layers = nn.ModuleList(
             [
@@ -198,18 +198,18 @@ class PiFold(pl.LightningModule):
             ]
         )
         self.to_seq = nn.Linear(d_emb, 20)
-        
+
         self._init_params()
-        self.criterion = nn.CrossEntropyLoss(reduction='mean')
-        
+        self.criterion = nn.CrossEntropyLoss(reduction="mean")
+
         # Empty list for validation recovery metrics.
         self.validation_step_outputs = []
-        
+
     def _init_params(self):
         for name, param in self.named_parameters():
-            if name == 'virtual_atoms':
+            if name == "virtual_atoms":
                 continue
-                
+
             if param.dim() > 1:
                 nn.init.xavier_uniform_(param)
 
@@ -246,7 +246,7 @@ class PiFold(pl.LightningModule):
 
         loss = self.criterion(out, target)
         res_rec = (out.argmax(dim=-1) == target).float()
-        prt_rec = scatter_mean( res_rec.view(-1, 1), batch_idx )
+        prt_rec = scatter_mean(res_rec.view(-1, 1), batch_idx)
         self.log_dict(
             {
                 "train/loss": loss,
@@ -286,7 +286,7 @@ class PiFold(pl.LightningModule):
 
         loss = self.criterion(out, target)
         res_rec = (out.argmax(dim=-1) == target).float()
-        prt_rec = scatter_mean( res_rec.view(-1, 1), batch_idx )
+        prt_rec = scatter_mean(res_rec.view(-1, 1), batch_idx)
         self.log_dict(
             {
                 "val/loss": loss,
@@ -299,18 +299,16 @@ class PiFold(pl.LightningModule):
             on_epoch=True,
             batch_size=self.bsz,
         )
-        
+
         self.validation_step_outputs.append(prt_rec)
 
         return loss
-    
+
     def on_validation_epoch_end(self):
         prt_rec = torch.cat(self.validation_step_outputs)
-        
-        self.log_dict({
-            'val/median_prtwise_recovery': torch.median(prt_rec)
-        })
-        
+
+        self.log_dict({"val/median_prtwise_recovery": torch.median(prt_rec)})
+
         self.validation_step_outputs.clear()
 
     def configure_optimizers(self):
@@ -369,9 +367,9 @@ class PiFold(pl.LightningModule):
 
         # Compute distance between each pair of 'virtual' atoms.
         dist = torch.cdist(vac, vac)
-        
+
         # Add small Noise
-        dist = (dist + torch.randn_like(dist) / 25).clip(min=0.0)
+        dist = (dist + torch.randn_like(dist) * self.noise_std).clip(min=0.0)
 
         triu_indices = []
         idx = 0
@@ -403,10 +401,12 @@ class PiFold(pl.LightningModule):
         )
 
         edge_dist_feat = torch.cdist(four_atom_coords_i, four_atom_coords_j)
-        
+
         # Add small Noise
-        edge_dist_feat = (edge_dist_feat + torch.randn_like(edge_dist_feat) / 25).clip(min=0.0)
-        
+        edge_dist_feat = (edge_dist_feat + torch.randn_like(edge_dist_feat) * self.noise_std).clip(
+            min=0.0
+        )
+
         edge_dist_feat = rbf(edge_dist_feat)
         edge_dist_feat = edge_dist_feat.view(len(edge_dist_feat), -1)
 
